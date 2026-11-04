@@ -14,6 +14,7 @@ from src.rag_agent import HospitalKnowledgeBase
 from src.report_generator import HospitalReportGenerator
 from src.router import route_question
 from src.sql_agent import HospitalSQLAgent
+from src.desktop_auth import sign_in, sign_out, check_session
 
 
 EXAMPLES = [
@@ -60,15 +61,17 @@ COLUMN_LABELS = {
 class FloatingAssistant(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        sign_in(self)
         self.title("MedOps AI 桌面浮窗")
         self.geometry("460x620+980+120")
         self.minsize(390, 460)
         self.configure(bg="#07110f")
         self.attributes("-topmost", True)
 
-        self.sql_agent = HospitalSQLAgent()
-        self.kb = HospitalKnowledgeBase()
-        self.report_generator = HospitalReportGenerator(self.sql_agent)
+        self.sql_agent = HospitalSQLAgent(ROOT / "data/hospital.db", ROOT / "data/hospital_schema.json", self.principal)
+        self.kb = HospitalKnowledgeBase(ROOT / "hospital_docs")
+        self.report_generator = HospitalReportGenerator(self.sql_agent) if self.principal.role == "director" else None
+        self.examples = EXAMPLES if self.principal.role == "director" else ["本月本人门诊量是多少？", "本月本人手术量是多少？", "DRG/DIP支付下医院运营应关注哪些指标？"]
 
         self._configure_style()
         self._build_ui()
@@ -95,7 +98,7 @@ class FloatingAssistant(tk.Tk):
         self.topmost_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(title_row, text="置顶", variable=self.topmost_var, command=self._toggle_topmost).pack(side="right")
 
-        ttk.Label(header, text="桌面医管小浮窗 | 输入问题后显示结果", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+        ttk.Label(header, text=f"{self.principal.display_name} · {self.principal.role_label} · {self.principal.department_name}", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
 
         body = ttk.Frame(self, padding=(16, 8, 16, 14))
         body.pack(fill="both", expand=True)
@@ -103,8 +106,8 @@ class FloatingAssistant(tk.Tk):
         input_card = ttk.Frame(body, style="Card.TFrame", padding=12)
         input_card.pack(fill="x")
         ttk.Label(input_card, text="快速问题").pack(anchor="w")
-        self.example_var = tk.StringVar(value=EXAMPLES[0])
-        self.example_box = ttk.Combobox(input_card, textvariable=self.example_var, values=EXAMPLES, state="readonly")
+        self.example_var = tk.StringVar(value=self.examples[0])
+        self.example_box = ttk.Combobox(input_card, textvariable=self.example_var, values=self.examples, state="readonly")
         self.example_box.pack(fill="x", pady=(4, 10))
 
         ttk.Label(input_card, text="自定义问题").pack(anchor="w")
@@ -125,6 +128,7 @@ class FloatingAssistant(tk.Tk):
         ttk.Button(buttons, text="发送", command=self.ask).pack(side="left", fill="x", expand=True)
         ttk.Button(buttons, text="用示例", command=self.use_example).pack(side="left", padx=8)
         ttk.Button(buttons, text="打开网页", command=lambda: webbrowser.open("http://localhost:8501")).pack(side="right")
+        ttk.Button(buttons, text="退出登录", command=lambda: sign_out(self)).pack(side="right", padx=4)
 
         self.status_var = tk.StringVar(value="等待提问")
         ttk.Label(body, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w", pady=(10, 4))
@@ -175,6 +179,8 @@ class FloatingAssistant(tk.Tk):
         self.geometry("360x260+1040+160")
 
     def ask(self) -> None:
+        if not check_session(self):
+            return
         question = self.question_text.get("1.0", "end").strip() or self.example_var.get()
         if not question:
             return
@@ -199,6 +205,7 @@ class FloatingAssistant(tk.Tk):
                 lines.append(rag["answer"])
 
             if decision.route == "report":
+                self.principal.require_director()
                 lines.append(self.report_generator.generate_monthly_report(question))
 
             self._set_output("\n".join(lines))

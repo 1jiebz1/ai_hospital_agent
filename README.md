@@ -53,10 +53,50 @@ ai_hospital_agent/
 
 ## 运行方式
 
+使用 Python 3.11 或更高版本。新增登录与角色隔离：
+
+| 账号角色 | 可用功能 | 数据范围 |
+|---|---|---|
+| 科室主任 | 运营总览、趋势、科室绩效、医保观察、问答、简报、公共知识库 | 账号绑定的本科室 |
+| 医生 | 我的工作台、个人工作量、个人问答、公共知识库 | 账号绑定医生本人的门诊与手术工作量 |
+
+角色与科室由管理员建号时分配，登录页不提供自行选择角色或注册。医生不可查看收入、住院明细、医保风险或管理简报。医生个人数据仅保留工作量需要的字段，不暴露患者标识、诊断或收费字段。网页与两个桌面入口共用账号。
+
 ```bash
 pip install -r requirements.txt
-python scripts/generate_hospital_data.py
+python scripts/manage_users.py demo
 streamlit run app.py
+```
+
+仓库已带模拟数据库，无需重新生成。`demo` 仅在没有账号时创建主任和医生各一个，绑定现有第一科室和医生，随机密码在终端显示；不会覆盖已有账号。请保存密码，使用打印的 `director` / `doctor` 账号登录。需要重建模拟数据时才运行 `python scripts/generate_hospital_data.py`，重建后需核对账号绑定。
+
+### 账号管理
+
+以下命令仅由系统管理员在服务器或本地终端运行：
+
+```bash
+# 查可绑定的科室和医生编号
+python scripts/manage_users.py list-bindings
+# 创建科室主任，按提示设置密码
+python scripts/manage_users.py create --username director_neike --name 张主任 --role director --department-id 1
+# 创建医生，医生档案必须属于指定科室
+python scripts/manage_users.py create --username doctor_1 --name 医生 --role doctor --department-id 1 --doctor-id 1
+# 重置密码，撤销该账号所有旧会话
+python scripts/manage_users.py reset-password doctor_1
+# 停用账号，旧会话同时失效
+python scripts/manage_users.py disable doctor_1
+```
+
+密码采用随机盐与 PBKDF2-SHA256 保存；不提供固定默认密码。连续 5 次登录失败后锁定账号尝试 5 分钟。会话有效期 8 小时，退出会撤销服务端会话并清空界面状态；刷新或关闭页面后可能需要重新登录。登录不能持久保存到浏览器。
+
+账号和会话保存在 `data/auth.db`（已排除提交），可通过服务端环境变量 `HOSPITAL_AUTH_DB` 指向持久磁盘。云端部署必须事先用相同管理脚本创建账号，并持久化该文件；没有配置账号时仅显示登录提示，不会开放自助主任注册。原模拟数据库不是账号数据库。
+
+数据访问在服务端创建按角色裁剪的只读内存快照：主任只包含本科室记录；医生仅包含本人工作量所需表和列，原数据库不会挂载给查询连接。查询缓存包含账号范围，退出不影响其他用户。此实现针对当前小型模拟数据库；真实大规模院内数据应迁移到数据库授权视图或行级权限及统一身份服务。
+
+验证登录、页面与数据隔离：
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 ## 在线部署

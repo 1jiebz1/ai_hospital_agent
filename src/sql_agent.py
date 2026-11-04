@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -12,6 +11,8 @@ from dotenv import load_dotenv
 
 from .analysis import analyze_metric_rows
 from .sql_guard import add_default_limit, validate_select_sql
+from .access import hospital_connection
+from .auth import Principal
 
 
 FIXED_TODAY = date(2026, 6, 7)
@@ -27,11 +28,13 @@ class QueryResult:
 
 
 class HospitalSQLAgent:
-    def __init__(self, db_path: str | Path | None = None, schema_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None, schema_path: str | Path | None = None,
+                 principal: Principal | None = None):
         load_dotenv()
         self.db_path = Path(db_path or os.getenv("DATABASE_PATH", "data/hospital.db"))
         self.schema_path = Path(schema_path or os.getenv("SCHEMA_PATH", "data/hospital_schema.json"))
         self.schema = self._load_schema()
+        self.principal = principal
 
     def _load_schema(self) -> dict:
         if self.schema_path.exists():
@@ -241,12 +244,16 @@ ORDER BY visit_count DESC
 
     def execute_sql(self, sql: str, limit: int = 10) -> list[dict]:
         safe_sql = add_default_limit(validate_select_sql(sql), limit=limit)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
+        with hospital_connection(self.db_path, self.principal) as conn:
             cursor = conn.execute(safe_sql)
             return [dict(row) for row in cursor.fetchall()]
 
     def ask(self, question: str, limit: int = 10) -> QueryResult:
+        if self.principal and self.principal.role == "doctor":
+            if any(word in question for word in ("收入", "费用", "收费", "医保", "床位", "绩效", "住院", "药占比", "耗材", "报告", "简报")):
+                raise PermissionError("医生账号仅可查询本人门诊与手术工作量；制度说明请使用知识库。")
+            if not any(word in question for word in ("门诊", "接诊", "手术", "工作量", "医生")):
+                raise PermissionError("请选择本人门诊或手术工作量，或查询公共知识库。")
         sql = self.generate_sql(question)
         rows = self.execute_sql(sql, limit=limit)
         analysis = analyze_metric_rows(rows, question)

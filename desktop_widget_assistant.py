@@ -13,6 +13,7 @@ from src.rag_agent import HospitalKnowledgeBase
 from src.report_generator import HospitalReportGenerator
 from src.router import route_question
 from src.sql_agent import HospitalSQLAgent
+from src.desktop_auth import sign_in, sign_out, check_session
 
 
 EXAMPLES = [
@@ -44,6 +45,7 @@ COLUMN_LABELS = {
 class DesktopWidget(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        sign_in(self)
         self.title("AI 医管小拖件")
         self.geometry("420x560+980+120")
         self.configure(bg="#07110f")
@@ -54,9 +56,10 @@ class DesktopWidget(tk.Tk):
         self.drag_y = 0
         self.expanded = True
 
-        self.sql_agent = HospitalSQLAgent()
-        self.kb = HospitalKnowledgeBase()
-        self.report_generator = HospitalReportGenerator(self.sql_agent)
+        self.sql_agent = HospitalSQLAgent(ROOT / "data/hospital.db", ROOT / "data/hospital_schema.json", self.principal)
+        self.kb = HospitalKnowledgeBase(ROOT / "hospital_docs")
+        self.report_generator = HospitalReportGenerator(self.sql_agent) if self.principal.role == "director" else None
+        self.examples = EXAMPLES if self.principal.role == "director" else ["本月本人门诊量是多少？", "本月本人手术量是多少？", "DRG/DIP支付下医院运营应关注哪些指标？"]
 
         self._build()
 
@@ -71,7 +74,7 @@ class DesktopWidget(tk.Tk):
 
         self.title_label = tk.Label(
             self.header,
-            text="AI 医管小拖件",
+            text=f"{self.principal.role_label} · {self.principal.department_name}",
             bg="#123322",
             fg="#34d66f",
             font=("Microsoft YaHei UI", 12, "bold"),
@@ -83,7 +86,7 @@ class DesktopWidget(tk.Tk):
         tk.Button(
             self.header,
             text="×",
-            command=self.destroy,
+            command=lambda: sign_out(self),
             bg="#123322",
             fg="#edf6f1",
             activebackground="#1c4a32",
@@ -116,8 +119,8 @@ class DesktopWidget(tk.Tk):
             font=("Microsoft YaHei UI", 9),
         ).pack(anchor="w")
 
-        self.example_var = tk.StringVar(value=EXAMPLES[0])
-        self.example_menu = tk.OptionMenu(self.body, self.example_var, *EXAMPLES)
+        self.example_var = tk.StringVar(value=self.examples[0])
+        self.example_menu = tk.OptionMenu(self.body, self.example_var, *self.examples)
         self.example_menu.configure(bg="#111a17", fg="#edf6f1", activebackground="#143626", activeforeground="#34d66f", bd=0)
         self.example_menu.pack(fill="x", pady=(8, 8))
 
@@ -138,6 +141,7 @@ class DesktopWidget(tk.Tk):
         self._button(btn_row, "发送", self.ask).pack(side="left", fill="x", expand=True)
         self._button(btn_row, "用示例", self.use_example).pack(side="left", padx=6)
         self._button(btn_row, "网页", lambda: webbrowser.open("http://localhost:8501")).pack(side="right")
+        self._button(btn_row, "退出", lambda: sign_out(self)).pack(side="right", padx=4)
 
         self.status = tk.Label(self.body, text="等待提问", bg="#07110f", fg="#8fa39a", font=("Microsoft YaHei UI", 9))
         self.status.pack(anchor="w", pady=(2, 6))
@@ -194,6 +198,8 @@ class DesktopWidget(tk.Tk):
         self.question.insert("1.0", self.example_var.get())
 
     def ask(self) -> None:
+        if not check_session(self):
+            return
         question = self.question.get("1.0", "end").strip() or self.example_var.get()
         self.status.configure(text="分析中...")
         self.update_idletasks()
@@ -215,6 +221,7 @@ class DesktopWidget(tk.Tk):
                 lines.append(rag["answer"])
 
             if decision.route == "report":
+                self.principal.require_director()
                 lines.append(self.report_generator.generate_monthly_report(question))
 
             self._set_output("\n".join(lines))

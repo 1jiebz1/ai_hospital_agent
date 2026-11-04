@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
+from .access import hospital_connection
+from .auth import Principal
 
 
 class MedicalInsuranceRiskScorer:
@@ -11,12 +12,14 @@ class MedicalInsuranceRiskScorer:
     operation and case-settlement data into department-level review priorities.
     """
 
-    def __init__(self, db_path: str | Path = "data/hospital.db"):
+    def __init__(self, db_path: str | Path = "data/hospital.db", principal: Principal | None = None):
         self.db_path = Path(db_path)
+        if principal:
+            principal.require_director()
+        self.principal = principal
 
     def _fetch_rows(self, sql: str, params: tuple = ()) -> list[dict]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
+        with hospital_connection(self.db_path, self.principal) as conn:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     @staticmethod

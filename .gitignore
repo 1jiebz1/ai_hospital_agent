@@ -7,6 +7,8 @@ __pycache__/
 
 # Environment and secrets
 .env
+.streamlit/secrets.toml
+data/auth.db*
 .venv/
 venv/
 env/

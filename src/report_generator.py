@@ -9,7 +9,7 @@ from .sql_agent import HospitalSQLAgent
 class HospitalReportGenerator:
     def __init__(self, sql_agent: HospitalSQLAgent | None = None):
         self.sql_agent = sql_agent or HospitalSQLAgent()
-        self.risk_scorer = MedicalInsuranceRiskScorer(self.sql_agent.db_path)
+        self.risk_scorer = MedicalInsuranceRiskScorer(self.sql_agent.db_path, self.sql_agent.principal)
 
     @staticmethod
     def _report_windows() -> tuple[str, str, str, str]:
@@ -26,6 +26,8 @@ class HospitalReportGenerator:
         )
 
     def generate_monthly_report(self, question: str = "生成本月医院运营简报") -> str:
+        if self.sql_agent.principal:
+            self.sql_agent.principal.require_director()
         outpatient = self.sql_agent.ask("本月门诊量最高的5个科室", limit=5)
         income = self.sql_agent.ask("本月各科室收入排名", limit=5)
         drug = self.sql_agent.ask("本月药占比是多少", limit=5)
@@ -53,7 +55,8 @@ class HospitalReportGenerator:
             for row in risk_scores
         ) or "- 暂无重点医保控费观察风险。"
 
-        return f"""# 医院运营月度简报（模拟数据）
+        scope_title = f"{self.sql_agent.principal.department_name}运营月度简报" if self.sql_agent.principal else "医院运营月度简报"
+        return f"""# {scope_title}（模拟数据）
 
 ## 一、总体运营概况
 本月门诊量排名靠前科室：{fmt_rows(outpatient.rows, "department_name", "visit_count", "人次")}。

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+from html import escape
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -15,9 +15,13 @@ from src.report_generator import HospitalReportGenerator
 from src.risk_scoring import MedicalInsuranceRiskScorer
 from src.router import route_question
 from src.sql_agent import HospitalSQLAgent
+from src.auth import AuthStore, Principal, allowed_pages, require_page
+from src.auth_ui import require_login, logout
+from src.access import hospital_connection
 
 
-DB_PATH = Path("data/hospital.db")
+ROOT = Path(__file__).resolve().parent
+DB_PATH = ROOT / "data/hospital.db"
 
 UI_TOKENS = {
     "bg": "#07110f",
@@ -92,15 +96,15 @@ PAGE_REGISTRY = [
 PAGE_LABELS = [page["label"] for page in PAGE_REGISTRY]
 
 EXAMPLES = [
-    "本月门诊量最高的5个科室是哪些？",
-    "统计2026年5月各科室收入排名。",
-    "最近7天床位使用率超过90%的科室有哪些？",
+    "本月本科室门诊量是多少？",
+    "统计2026年5月本科室收入。",
+    "最近7天本科室床位使用率是多少？",
     "本月药占比是多少？",
-    "本月耗材收入占比最高的科室有哪些？",
+    "本月本科室耗材收入占比是多少？",
     "本月医疗服务收入占比是多少？",
-    "2026年5月平均住院日最高的科室有哪些？",
-    "本月各科室住院人数是多少？",
-    "本月各科室床位周转次数是多少？",
+    "2026年5月本科室平均住院日是多少？",
+    "本月本科室住院人数是多少？",
+    "本月本科室床位周转次数是多少？",
     "本月手术量按手术级别怎么分布？",
     "哪个医生上周接诊人数最多？",
     "DRG/DIP支付下医院运营应关注哪些指标？",
@@ -474,18 +478,22 @@ def inject_css() -> None:
 
 
 @st.cache_resource
-def get_agents():
-    sql_agent = HospitalSQLAgent()
-    kb = HospitalKnowledgeBase()
-    report_generator = HospitalReportGenerator(sql_agent)
-    risk_scorer = MedicalInsuranceRiskScorer(DB_PATH)
+def get_agents(identity: Principal):
+    sql_agent = HospitalSQLAgent(DB_PATH, ROOT / "data/hospital_schema.json", identity)
+    kb = HospitalKnowledgeBase(ROOT / "hospital_docs")
+    report_generator = HospitalReportGenerator(sql_agent) if identity.role == "director" else None
+    risk_scorer = MedicalInsuranceRiskScorer(DB_PATH, identity) if identity.role == "director" else None
     return sql_agent, kb, report_generator, risk_scorer
 
 
 @st.cache_data(ttl=60)
-def query_df(sql: str) -> pd.DataFrame:
-    with sqlite3.connect(DB_PATH) as conn:
+def _query_df(sql: str, identity: Principal, version: int) -> pd.DataFrame:
+    with hospital_connection(DB_PATH, identity) as conn:
         return pd.read_sql_query(sql, conn)
+
+
+def query_df(sql: str) -> pd.DataFrame:
+    return _query_df(sql, principal, DB_PATH.stat().st_mtime_ns)
 
 
 def query_value(sql: str, default: float = 0.0) -> float:
@@ -504,12 +512,13 @@ def get_latest_date() -> date:
         SELECT MAX(day) AS latest_day
         FROM (
             SELECT MAX(visit_date) AS day FROM outpatient_visits
-            UNION ALL SELECT MAX(bill_date) FROM billing_records
-            UNION ALL SELECT MAX(stat_date) FROM bed_daily_stats
+            UNION ALL SELECT MAX(surgery_date) FROM surgery_records
         )
         """
     )
-    value = df.loc[0, "latest_day"] if not df.empty else "2026-06-07"
+    value = df.loc[0, "latest_day"] if not df.empty else None
+    if not value or pd.isna(value):
+        return date(2026, 6, 7)
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
@@ -532,6 +541,9 @@ def previous_month_bounds(day: date) -> tuple[date, date]:
     return previous_start, previous_end
 
 
+inject_css()
+auth_store = AuthStore()
+principal = require_login(auth_store)
 LATEST_DATE = get_latest_date()
 MONTH_START, MONTH_END = month_bounds(LATEST_DATE)
 PREV_START, PREV_END = previous_month_bounds(LATEST_DATE)
@@ -857,18 +869,19 @@ def render_dashboard() -> None:
     render_header("运营总览", f"数据时间范围：{MONTH_START} 至 {LATEST_DATE}；当前为模拟医院运营数据。")
 
     metrics = get_monthly_metrics()
-    cols = st.columns(6)
+    cols = st.columns(3)
     with cols[0]:
         render_metric("本月门诊量", fmt_int(metrics["visits"][0]), metrics["visits"][1])
     with cols[1]:
         render_metric("本月总收入", fmt_money(metrics["income"][0]), metrics["income"][1])
     with cols[2]:
         render_metric("近7天床位使用率", fmt_pct(metrics["bed_rate"][0]), metrics["bed_rate"][1], "较上周")
-    with cols[3]:
+    cols = st.columns(3)
+    with cols[0]:
         render_metric("药品收入占比", fmt_pct(metrics["drug_ratio"][0]), metrics["drug_ratio"][1])
-    with cols[4]:
+    with cols[1]:
         render_metric("本月手术量", fmt_int(metrics["surgeries"][0]), metrics["surgeries"][1])
-    with cols[5]:
+    with cols[2]:
         render_metric("本月住院人数", fmt_int(metrics["inpatients"][0]), metrics["inpatients"][1])
 
     st.write("")
@@ -924,6 +937,9 @@ def render_dashboard() -> None:
 
 
 def render_qa() -> None:
+    if principal.role == "doctor":
+        render_doctor_qa()
+        return
     render_header("智能问答", "用自然语言查询运营数据、解释医管指标、生成管理报告。", "Text-to-SQL + RAG")
     left, right = st.columns([2, 1])
     with left:
@@ -1318,21 +1334,29 @@ def render_sidebar() -> str:
         """,
         unsafe_allow_html=True,
     )
+    st.sidebar.markdown(f"**{principal.display_name}**")
+    st.sidebar.caption(f"{principal.role_label} · {principal.department_name}")
+    st.sidebar.caption("数据范围：本科室" if principal.role == "director" else "数据范围：本人门诊与手术工作量")
+    if st.sidebar.button("退出登录", width="stretch"):
+        logout(auth_store)
     page = st.sidebar.radio(
         "导航",
-        PAGE_LABELS,
+        allowed_pages(principal),
         label_visibility="collapsed",
+        key=f"navigation_{principal.user_id}",
     )
     st.sidebar.markdown("---")
     st.sidebar.markdown("**系统状态**")
     st.sidebar.markdown("<span class='tag'>数据库正常</span><span class='tag'>SQL Guard 已启用</span>", unsafe_allow_html=True)
     st.sidebar.caption(f"最新数据日期：{LATEST_DATE}")
-    st.sidebar.button("发起新分析", width="stretch")
     return page
 
 
 def render_current_page(page: str) -> None:
+    require_page(principal, page)
     page_renderers = {
+        "我的工作台": render_doctor_dashboard,
+        "个人工作量": render_doctor_workload,
         "运营总览": render_dashboard,
         "浮窗问答": render_floating_qa,
         "智能问答": render_qa,
@@ -1343,10 +1367,77 @@ def render_current_page(page: str) -> None:
         "医管知识库": render_knowledge,
         "改动记录": render_change_log,
     }
-    page_renderers.get(page, render_change_log)()
+    page_renderers[page]()
 
 
-inject_css()
-sql_agent, kb, report_generator, risk_scorer = get_agents()
+def render_doctor_dashboard() -> None:
+    render_header("我的工作台", f"{escape(principal.display_name)}，欢迎回来。以下仅展示本人工作量，数据截至 {LATEST_DATE}。", "医生工作台")
+    visits = query_value(f"SELECT COUNT(*) FROM outpatient_visits WHERE visit_date >= '{MONTH_START}' AND visit_date < '{MONTH_END}'")
+    surgeries = query_value(f"SELECT COUNT(*) FROM surgery_records WHERE surgery_date >= '{MONTH_START}' AND surgery_date < '{MONTH_END}'")
+    days = query_value(f"SELECT COUNT(DISTINCT visit_date) FROM outpatient_visits WHERE visit_date >= '{MONTH_START}' AND visit_date < '{MONTH_END}'")
+    a, b, c = st.columns(3)
+    with a:
+        render_static_metric("本月接诊人次", fmt_int(visits), "本人门诊记录")
+    with b:
+        render_static_metric("本月参与手术", fmt_int(surgeries), "本人手术记录")
+    with c:
+        render_static_metric("本月有接诊记录天数", fmt_int(days), "按就诊日期去重")
+    st.write("")
+    render_doctor_workload(show_header=False)
+
+
+def render_doctor_workload(show_header: bool = True) -> None:
+    if show_header:
+        render_header("个人工作量", f"仅包含 {escape(principal.display_name)} 本人的门诊与手术记录。", "本人数据")
+    trend = query_df(f"""SELECT visit_date AS day,COUNT(*) AS visit_count FROM outpatient_visits
+        WHERE visit_date >= '{TREND_START}' AND visit_date <= '{LATEST_DATE}' GROUP BY visit_date ORDER BY visit_date""")
+    section_title("我的接诊趋势", "近60天")
+    if trend.empty:
+        st.info("当前范围内暂无本人门诊记录。")
+    else:
+        fig = px.line(trend, x="day", y="visit_count", markers=True,
+                      labels={"day": "日期", "visit_count": "接诊人次"})
+        st.plotly_chart(style_fig(fig, 300), width="stretch")
+    left, right = st.columns(2)
+    with left:
+        section_title("每日接诊明细", "本人数据")
+        st.dataframe(trend.rename(columns={"day": "日期", "visit_count": "接诊人次"}), width="stretch", hide_index=True)
+    with right:
+        section_title("本月手术工作量", "按级别汇总")
+        surgery = query_df(f"""SELECT surgery_level,COUNT(*) AS surgery_count,
+            ROUND(AVG(duration_minutes),1) AS avg_duration_minutes FROM surgery_records
+            WHERE surgery_date >= '{MONTH_START}' AND surgery_date < '{MONTH_END}' GROUP BY surgery_level""")
+        if surgery.empty:
+            st.info("本月暂无本人手术记录。")
+        else:
+            st.dataframe(surgery.rename(columns=COLUMN_LABELS), width="stretch", hide_index=True)
+
+
+def render_doctor_qa() -> None:
+    render_header("智能问答", "查询本人工作量，或查阅公共医管知识。", "医生助手")
+    mode = st.radio("查询内容", ("个人工作量查询", "公共知识问答"), horizontal=True)
+    samples = ["本月本人门诊量是多少？", "本月本人手术量按级别分布。"] if mode == "个人工作量查询" else ["药占比是什么意思？", "DRG/DIP支付下医院运营应关注哪些指标？"]
+    example = st.selectbox("示例问题", samples)
+    question = st.text_input("自定义问题", placeholder="输入你想了解的问题")
+    st.caption("数据查询始终限定本人，不提供科室收入、绩效、医保风险和管理报告。")
+    if st.button("开始查询", type="primary"):
+        question = question.strip() or example
+        if mode == "公共知识问答":
+            result = kb.answer(question)
+            st.write(result["answer"])
+            if result["sources"]:
+                st.caption("来源：" + "、".join(item["title"] for item in result["sources"]))
+        else:
+            try:
+                result = sql_agent.ask(question)
+                st.dataframe(pd.DataFrame(result.rows).rename(columns=COLUMN_LABELS), width="stretch", hide_index=True)
+                for note in result.analysis:
+                    st.write(note)
+            except PermissionError as exc:
+                st.warning(str(exc))
+
+
+sql_agent, kb, report_generator, risk_scorer = get_agents(principal)
 page = render_sidebar()
+st.caption(f"当前身份：{principal.role_label} · {principal.department_name} · " + ("本科室数据" if principal.role == "director" else "本人数据"))
 render_current_page(page)
