@@ -38,7 +38,27 @@ streamlit run app.py
 
 `data/auth.db` 含账号和会话数据，已排除版本控制，交付源码包也不包含此文件；解压后的副本需要重新创建账号。云端需预先建号并使用持久存储保存账号文件。当前实现针对小型模拟数据，真实院内生产环境需要结合统一身份服务和数据库权限进一步接入。
 
-## 验证
+## 修改本地和云端账号
+
+本机在项目根目录的 `账号密码配置.toml` 中维护账号。此文件被 Git 忽略，不上传。配置为唯一账号设置来源；改用户名或密码后，下一次登录或会话检查即生效，旧会话撤销。保留 `[accounts.director]`、`[accounts.doctor]` 两个区段名称，只改引号内的值，密码至少 6 位。已有账号保持原科室和医生绑定；已有账号时首次配置需使用其当前用户名。配置失效时暂停访问，不展示密码。不要与管理脚本交替重置同一账号，否则配置文件会在下一次读取时重新应用。
+
+云端在 Streamlit → Manage app → Settings → Secrets 中保存相同的两个区段。当前版本首次配置主任和医生时，绑定模拟数据库的第一科室和第一医生；云端账号库重建时从 Secrets 恢复。重启可能丢失会话和本地账号变动；Secret 中的设置作为持久来源。现有账号停用状态不会被配置重新开启。
+
+配置示例（下面是占位内容，必须换成自己的账号密码）：
+
+```toml
+[accounts.director]
+username = "your_director_account"
+password = "replace_with_private_password"
+
+[accounts.doctor]
+username = "your_doctor_account"
+password = "replace_with_another_private_password"
+```
+
+本地文件不会自动同步到云端；更新云端账号请在 Secrets 中保存对应配置。两种来源同时出现时暂停运行，避免账号密码来回覆盖。
+
+## 验证配置修改
 
 ```bash
 python -m unittest discover -s tests -v

@@ -543,6 +543,21 @@ def previous_month_bounds(day: date) -> tuple[date, date]:
 
 inject_css()
 auth_store = AuthStore()
+try:
+    # Streamlit stores this table privately; no default account or public registration.
+    try:
+        cloud_accounts = st.secrets.get("accounts", {})
+    except FileNotFoundError:
+        cloud_accounts = {}
+    from src.account_config import apply_account_config
+    from src.auth import ROOT as AUTH_ROOT
+    if cloud_accounts and (AUTH_ROOT / "账号密码配置.toml").exists():
+        raise ValueError("本地账号配置与云端 Secrets 同时存在，请仅保留一种账号配置来源。")
+    apply_account_config(auth_store, cloud_accounts, DB_PATH)
+    auth_store.has_users()
+except (ValueError, OSError):
+    st.error("账号配置无法读取或格式无效，请管理员检查本地账号配置或云端 Secrets。")
+    st.stop()
 principal = require_login(auth_store)
 LATEST_DATE = get_latest_date()
 MONTH_START, MONTH_END = month_bounds(LATEST_DATE)

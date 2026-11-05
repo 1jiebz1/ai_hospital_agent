@@ -9,6 +9,7 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 data/auth.db*
+账号密码配置.toml
 .venv/
 venv/
 env/

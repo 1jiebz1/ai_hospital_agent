@@ -98,6 +98,25 @@ class TestLoginApp(unittest.TestCase):
         self.assertFalse(self.at.sidebar.radio)
         self.assertIn("账号",[item.label for item in self.at.text_input])
 
+    def test_cloud_secrets_initialize_accounts_and_password_change_revokes_login(self):
+        with closing(self.store._connect()) as conn, conn:
+            conn.execute("DELETE FROM users")
+        self.at.secrets["accounts"] = {
+            "director": {"username": "director", "password": PASSWORD},
+            "doctor": {"username": "doctor", "password": PASSWORD},
+        }
+        self.login("doctor")
+        self.assertIn("我的工作台", self.at.sidebar.radio[0].options)
+        self.at.secrets["accounts"]["doctor"]["password"] = "Updated-cloud-password"
+        self.at.run()
+        self.assertFalse(self.at.exception)
+        self.assertFalse(self.at.sidebar.radio)
+        self.at.text_input[0].set_value("doctor")
+        self.at.text_input[1].set_value("Updated-cloud-password")
+        self.at.button[0].click().run()
+        self.assertFalse(self.at.exception)
+        self.assertIn("我的工作台", self.at.sidebar.radio[0].options)
+
 
 if __name__ == "__main__":
     unittest.main()

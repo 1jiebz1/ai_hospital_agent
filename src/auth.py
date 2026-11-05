@@ -55,6 +55,7 @@ def _valid_password(password: str) -> None:
 
 class AuthStore:
     def __init__(self, path: str | Path | None = None):
+        self._use_local_config = path is None
         self.path = Path(path or os.getenv("HOSPITAL_AUTH_DB", str(ROOT / "data/auth.db")))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn, conn:
@@ -82,6 +83,7 @@ class AuthStore:
         return conn
 
     def has_users(self) -> bool:
+        self._reload_local_config()
         with closing(self._connect()) as conn:
             return bool(conn.execute("SELECT 1 FROM users LIMIT 1").fetchone())
 
@@ -112,6 +114,7 @@ class AuthStore:
                  salt, _hash_password(password, salt)))
 
     def authenticate(self, username: str, password: str, now: float | None = None) -> str | None:
+        self._reload_local_config()
         username = username.strip().lower()[:80]
         now = time.time() if now is None else now
         with closing(self._connect()) as conn, conn:
@@ -139,6 +142,7 @@ class AuthStore:
             return token
 
     def get_session(self, token: str | None, now: float | None = None) -> Principal | None:
+        self._reload_local_config()
         if not token:
             return None
         now = time.time() if now is None else now
@@ -155,6 +159,14 @@ class AuthStore:
             with closing(self._connect()) as conn, conn:
                 conn.execute("DELETE FROM sessions WHERE token_hash=?",
                              (hashlib.sha256(token.encode()).hexdigest(),))
+
+    def _reload_local_config(self) -> None:
+        if not self._use_local_config:
+            return
+        from .account_config import load_account_file, apply_account_config
+        path = ROOT / "账号密码配置.toml"
+        if path.exists():
+            apply_account_config(self, load_account_file(path), ROOT / "data/hospital.db")
 
     def reset_password(self, username: str, password: str) -> None:
         _valid_password(password)
