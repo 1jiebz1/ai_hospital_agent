@@ -22,6 +22,10 @@ class TestLoginApp(unittest.TestCase):
         self.environment = patch.dict(os.environ,{"HOSPITAL_AUTH_DB":str(self.auth_path)})
         self.environment.start()
         self.addCleanup(self.environment.stop)
+        # App tests must never read a developer's private account file.
+        self.config_root = patch("src.auth.ROOT", Path(self.tmp.name))
+        self.config_root.start()
+        self.addCleanup(self.config_root.stop)
         self.store = AuthStore(self.auth_path)
         hospital = ROOT/"data/hospital.db"
         with closing(sqlite3.connect(hospital)) as conn:
