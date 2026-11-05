@@ -52,7 +52,31 @@ class TestLoginApp(unittest.TestCase):
         self.at.text_input[0].set_value("doctor")
         self.at.text_input[1].set_value("wrong")
         self.at.button[0].click().run()
-        self.assertTrue(self.at.error)
+        self.assertEqual(self.at.error[0].value, "账号或密码不正确")
+        self.assertFalse(self.at.sidebar.radio)
+
+    def test_empty_login_skips_authentication_and_error_stays_above_form(self):
+        self.at.run()
+        with patch("src.auth.AuthStore.authenticate", side_effect=AssertionError("empty login reached authentication")):
+            self.at.button[0].click().run()
+        self.assertFalse(self.at.exception)
+        self.assertEqual(self.at.error[0].value, "请输入账号和密码")
+        self.assertFalse(self.at.sidebar.radio)
+
+    def test_remember_account_never_remembers_password_or_login_page_styles(self):
+        self.at.run()
+        self.at.checkbox[0].set_value(True)
+        self.at.text_input[0].set_value("doctor")
+        self.at.text_input[1].set_value(PASSWORD)
+        self.at.button[0].click().run()
+        self.assertFalse(self.at.exception)
+        self.assertFalse(any("#login-brand" in item.value for item in self.at.markdown))
+        with self.assertRaises(KeyError):
+            self.at.session_state["_login_request"]
+        self.at.sidebar.button[0].click().run()
+        self.assertFalse(self.at.exception)
+        self.assertEqual(self.at.text_input[0].value, "doctor")
+        self.assertEqual(self.at.text_input[1].value, "")
         self.assertFalse(self.at.sidebar.radio)
 
     def test_director_all_pages_and_question_report_stay_scoped(self):
